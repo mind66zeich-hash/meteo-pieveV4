@@ -21,7 +21,8 @@
     <button type="button" class="btn" id="refresh">Aggiorna</button>
   </header>
 
-  <section class="days" id="days" aria-label="Prossimi 7 giorni"></section>
+  <section class="days" id="days" aria-label="Prossimi 9 giorni"></section>
+  <p class="note" id="daysnote">Dal 7° giorno in poi le fonti disponibili sono meno e la previsione è più incerta: guarda l'indice di accordo. Per oggi l'icona descrive il tempo da adesso a mezzanotte.</p>
 
   <section class="panel">
     <h2>Temperature e spread tra fonti</h2>
@@ -77,6 +78,31 @@
     <div id="airnow"></div>
     <div id="airpollen"></div>
     <p class="note">Dati CAMS (Copernicus) tramite Open-Meteo, con celle di circa 11 km: in valle i valori locali possono differire. L'indice europeo va da 0 (aria buona) a oltre 100. Le soglie OMS sono le linee guida del 2021. I pollini sono previsti solo in stagione di fioritura e per circa 4 giorni, e i livelli sono indicativi perché la sensibilità cambia da persona a persona. Sono indicazioni generali, non un parere medico.</p>
+  </section>
+
+  <section class="panel" id="moonpanel">
+    <h2>Luna e fasi lunari</h2>
+    <div class="days mstrip" id="moonstrip"></div>
+    <div id="moonnow"></div>
+    <div id="moonchart"></div>
+    <p class="legend">
+      <span><i style="background:var(--moon-lit)"></i>Luna sopra l'orizzonte</span>
+      <span><i style="background:var(--night);opacity:.5"></i>Notte (Sole sotto l'orizzonte)</span>
+    </p>
+    <div id="moonnext"></div>
+    <p class="note">Fasi e posizione sono calcolate sul telefono con formule astronomiche: le fasi principali sono precise al minuto, gli orari di levata e tramonto sono indicativi (circa 5 minuti). Gli orari sono ora di Roma. La visibilità notturna usa la nuvolosità prevista dai modelli.</p>
+  </section>
+
+  <section class="panel" id="tidepanel">
+    <h2>Maree · Laguna di Venezia</h2>
+    <div id="tidelist"></div>
+    <div id="tidechart"></div>
+    <p class="legend">
+      <span><b style="color:var(--sun)">▲</b> Alta marea</span>
+      <span><b style="color:var(--rain)">▼</b> Bassa marea</span>
+      <span>Valori in cm sullo zero di Punta Salute</span>
+    </p>
+    <p class="note">Pieve di Soligo è nell'entroterra: qui non ci sono maree. Il mare più vicino è la Laguna di Venezia, a circa 50 km, ed è lì che si riferiscono questi valori. È la marea astronomica, calcolata con le costanti armoniche di Venezia: confrontata con tabelle pubblicate lo scarto tipico è di 5–15 minuti e circa 3 cm. Non comprende l'effetto di vento di scirocco e bassa pressione, che può alzare il livello di decine di centimetri: l'acqua alta a Venezia si dichiara da +110 cm, quindi per le allerte consulta il Centro Previsioni e Segnalazioni Maree del Comune di Venezia. Maree vive e morte sono segnalate dall'escursione del giorno.</p>
   </section>
 
   <section class="panel">

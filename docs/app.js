@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '5';
+  var VERSION = '6';
   window.addEventListener('error', function (e) {
     var l = document.getElementById('lead');
     if (l) l.textContent = 'Errore: ' + (e.message || 'sconosciuto') + ' (versione ' + VERSION + ')';
@@ -12,7 +12,7 @@
   });
 
   var LAT = 45.9003, LON = 12.17, TZ = 'Europe/Rome';
-  var NDAYS = 7, TTL = 30 * 60 * 1000, TIMEOUT = 10000, RETRIES = 2;
+  var NDAYS = 9, TTL = 30 * 60 * 1000, TIMEOUT = 10000, RETRIES = 2;
   var NATIVE = !!(window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function' && window.Capacitor.isNativePlatform());
   var VARS = ['tmin', 'tmax', 'prec', 'prob', 'wind', 'gust'];
   var RANGE = { tmin: 20, tmax: 20, prec: 20, prob: 100, wind: 40, gust: 60 };
@@ -208,7 +208,7 @@
   }
   function readCache(id) {
     try {
-      var c = JSON.parse(lsGet('meteo.c.' + id) || 'null');
+      var c = JSON.parse(lsGet('meteo.c9.' + id) || 'null');
       if (!c) return null;
       return { t: c.t, rows: c.rows.map(function (r) { return row(r.date, r.tmin, r.tmax, r.prec, r.prob, r.wind, r.gust); }) };
     } catch (e) { return null; }
@@ -220,7 +220,7 @@
     if (c && !force && now - c.t < TTL && valid(c.rows)) return Promise.resolve({ src: src, status: 'ok', rows: c.rows, t: c.t });
     return src.run(src.key ? keys[src.key] : undefined).then(function (rows) {
       if (!valid(rows)) throw new Error('dati vuoti o fuori intervallo');
-      lsSet('meteo.c.' + src.id, JSON.stringify({ t: now, rows: rows }));
+      lsSet('meteo.c9.' + src.id, JSON.stringify({ t: now, rows: rows }));
       return { src: src, status: 'ok', rows: rows, t: now };
     }).catch(function (e) {
       if (c && valid(c.rows)) return { src: src, status: 'stale', rows: c.rows, t: c.t, error: e.message };
@@ -333,25 +333,37 @@
     var a = perHour ? 1 : 2, b = perHour ? 4 : 10;
     return mm < a ? 'rain1' : mm < b ? 'rain2' : 'rain3';
   }
-  // tipo di giornata: grandine > temporale > neve > pioggia > nuvolosità
+  // tipo di giornata: grandine > temporale > neve > pioggia > nuvolosità.
+  // Per oggi si guarda solo il tempo che resta, dall'ora attuale a mezzanotte.
   function dayKind(i, o) {
-    var date = state.dates[i], N = state.hourly.length, hail = 0, storm = 0, snow = 0, hr, ccs = [];
-    for (hr = 0; hr < 24; hr++) {
+    var date = state.dates[i], N = state.hourly.length, from = i === 0 ? nowHour() : 0, hail = 0, storm = 0, snow = 0, hr, ccs = [], mms = [], prs = [];
+    for (hr = from; hr < 24; hr++) {
       var c = hourCons(date, hr);
       if (c.hail > 0) hail++;
       if (c.storm > 0 && c.storm >= Math.min(2, N)) storm++;
       if (c.nm > 0 && c.snow * 2 >= c.nm) snow++;
-      if (hr >= 7 && hr <= 19 && ok(c.cc)) ccs.push(c.cc);
+      if (ok(c.mm)) mms.push(c.mm);
+      if (ok(c.pr)) prs.push(c.pr);
+      if (ok(c.cc)) ccs.push(c.cc);
     }
     if (hail > 0) return 'hail';
     if (storm > 0) return 'storm';
-    if (snow >= 2) return 'snow';
+    if (snow >= (i === 0 ? 1 : 2)) return 'snow';
     var mm = pick(o.prec), pr = pick(o.prob);
-    if (ok(mm) && mm >= 0.5 && (!ok(pr) || pr >= 30)) return rainLevel(mm, false);
-    var cloud = NaN;
-    try { var sd = skyDay(i); if (sd.has) cloud = sd.cloud; } catch (e) { cloud = NaN; }
-    if (!ok(cloud) && ccs.length) cloud = MEAN(ccs);
-    return cloudKind(cloud, false);
+    if (i === 0 && mms.length) { mm = SUM(mms); pr = prs.length ? MAX(prs) : pr; }
+    var minMm = i === 0 ? 0.3 : 0.5;
+    if (ok(mm) && mm >= minMm && (!ok(pr) || pr >= 30)) return rainLevel(mm, false);
+    var cl = [], night = false, tm = sunTimes(date);
+    try {
+      var es = [];
+      for (hr = from; hr < 24; hr++) es.push(skyHour(date, hr, tm));
+      var dayE = es.filter(function (e) { return e.day; });
+      if (i === 0 && tm && !dayE.length) { night = true; dayE = es; }
+      else if (i !== 0) dayE = dayE.length ? dayE : es;
+      cl = dayE.map(function (e) { return e.c; }).filter(ok);
+    } catch (e) { cl = []; }
+    var cloud = cl.length ? MEAN(cl) : (ccs.length ? MEAN(ccs) : NaN);
+    return cloudKind(cloud, night);
   }
   function hourKind(date, hr, c, tm) {
     if (c.hail > 0) return 'hail';
@@ -372,7 +384,7 @@
       try { k = dayKind(i, o); } catch (e) { k = ''; }
       if (!k) { try { var sd = skyDay(i); k = sd.has ? cloudKind(sd.cloud, false) : ''; } catch (e2) { k = ''; } }
       h += '<button type="button" class="day" data-d="' + i + '" aria-pressed="' + (i === state.sel) + '">' +
-        '<span class="dn">' + fmtWd(t) + '</span><span class="dd">' + fmtDm(t) + '</span>' +
+        '<span class="dn">' + fmtWd(t) + '</span><span class="dd">' + fmtDm(t) + (i === 0 ? ' · da ora' : '') + '</span>' +
         (k ? '<span class="ic">' + icon(k, 36) + '<span>' + ICONS[k].l + '</span></span>' : '') +
         '<span class="tt"><span class="tmax">' + f(pick(o.tmax), 0) + '°</span><span class="tmin">' + f(pick(o.tmin), 0) + '°</span></span>' +
         '<span class="rr">' + f(pick(o.prec)) + ' mm · ' + f(pick(o.prob), 0) + '%</span>' +
@@ -406,7 +418,7 @@
     });
     A.days.forEach(function (o, d) {
       var dt = toDate(state.dates[d]);
-      s += '<text class="ax" x="' + X(d) + '" y="' + (H - 14) + '" text-anchor="middle">' + fmtWd(dt) + ' ' + dt.getUTCDate() + '</text>';
+      s += '<text class="ax" x="' + X(d) + '" y="' + (H - 20) + '" text-anchor="middle">' + fmtWd(dt) + '</text><text class="ax" x="' + X(d) + '" y="' + (H - 7) + '" text-anchor="middle">' + dt.getUTCDate() + '</text>';
       s += '<rect data-d="' + d + '" x="' + (X(d) - bw / 2) + '" y="' + T + '" width="' + bw + '" height="' + (H - T) + '" fill="transparent" style="cursor:pointer"/>';
     });
     $('chart').innerHTML = s + '</svg>';
@@ -465,6 +477,304 @@
     void okc;
   }
 
+
+  // ---------- astronomia: luna, sole e maree (calcolati sul telefono, senza internet) ----------
+  var RAD = Math.PI / 180, DAYMS = 864e5;
+  function toDays(ms) { return ms / DAYMS - 0.5 + 2440588 - 2451545; }
+  var OBL = RAD * 23.4397;
+  function rightAsc(l, b) { return Math.atan2(Math.sin(l) * Math.cos(OBL) - Math.tan(b) * Math.sin(OBL), Math.cos(l)); }
+  function decl(l, b) { return Math.asin(Math.sin(b) * Math.cos(OBL) + Math.cos(b) * Math.sin(OBL) * Math.sin(l)); }
+  function sunCoords(d) {
+    var M = RAD * (357.5291 + 0.98560028 * d);
+    var C = RAD * (1.9148 * Math.sin(M) + 0.02 * Math.sin(2 * M) + 0.0003 * Math.sin(3 * M));
+    var L = M + C + RAD * 102.9372 + Math.PI;
+    return { dec: decl(L, 0), ra: rightAsc(L, 0) };
+  }
+  function moonCoords(d) {
+    var L = RAD * (218.316 + 13.176396 * d), M = RAD * (134.963 + 13.064993 * d), F = RAD * (93.272 + 13.229350 * d);
+    var l = L + RAD * 6.289 * Math.sin(M), b = RAD * 5.128 * Math.sin(F);
+    return { ra: rightAsc(l, b), dec: decl(l, b), dist: 385001 - 20905 * Math.cos(M) };
+  }
+  function altOf(ms, c) {
+    var d = toDays(ms), H = RAD * (280.16 + 360.9856235 * d) - RAD * (-LON) - c.ra, phi = RAD * LAT;
+    var h = Math.asin(Math.sin(phi) * Math.sin(c.dec) + Math.cos(phi) * Math.cos(c.dec) * Math.cos(H));
+    return h;
+  }
+  function moonAlt(ms) { var h = altOf(ms, moonCoords(toDays(ms))); return h / RAD; }
+  function sunAlt(ms) { var h = altOf(ms, sunCoords(toDays(ms))); return h / RAD; }
+  // fase: 0 = nuova, 0.25 = primo quarto, 0.5 = piena, 0.75 = ultimo quarto
+  function moonPhase(ms) {
+    var d = toDays(ms), s = sunCoords(d), m = moonCoords(d), sd = 149598000;
+    var phi = Math.acos(Math.sin(s.dec) * Math.sin(m.dec) + Math.cos(s.dec) * Math.cos(m.dec) * Math.cos(s.ra - m.ra));
+    var inc = Math.atan2(sd * Math.sin(phi), m.dist - sd * Math.cos(phi));
+    var ang = Math.atan2(Math.cos(s.dec) * Math.sin(s.ra - m.ra), Math.sin(s.dec) * Math.cos(m.dec) - Math.cos(s.dec) * Math.sin(m.dec) * Math.cos(s.ra - m.ra));
+    return { frac: (1 + Math.cos(inc)) / 2, phase: 0.5 + 0.5 * inc * (ang < 0 ? -1 : 1) / Math.PI, dist: m.dist };
+  }
+  // istanti esatti delle fasi principali (algoritmo di Meeus, termini principali), in millisecondi UTC
+  function phaseTime(k, q) {
+    var kk = k + q * 0.25, T = kk / 1236.85, d2 = Math.pow(T, 2), d3 = d2 * T, d4 = d3 * T;
+    var jde = 2451550.09766 + 29.530588861 * kk + 0.00015437 * d2 - 0.00000015 * d3 + 0.00000000073 * d4;
+    var E = 1 - 0.002516 * T - 0.0000074 * d2;
+    var M = RAD * (2.5534 + 29.1053567 * kk - 0.0000014 * d2 - 0.00000011 * d3);
+    var Mp = RAD * (201.5643 + 385.81693528 * kk + 0.0107582 * d2 + 0.00001238 * d3 - 0.000000058 * d4);
+    var F = RAD * (160.7108 + 390.67050284 * kk - 0.0016118 * d2 - 0.00000227 * d3 + 0.000000011 * d4);
+    var Om = RAD * (124.7746 - 1.56375588 * kk + 0.0020672 * d2 + 0.00000215 * d3);
+    var s = Math.sin, c = 0;
+    if (q === 0 || q === 2) {
+      var a = q === 0 ? [-0.4072, 0.17241, 0.01608, 0.01039, 0.00739, -0.00514, 0.00208, -0.00111, -0.00057, 0.00056, -0.00042, 0.00042, 0.00038, -0.00024, -0.00017]
+        : [-0.40614, 0.17302, 0.01614, 0.01043, 0.00734, -0.00515, 0.00209, -0.00111, -0.00057, 0.00056, -0.00042, 0.00042, 0.00038, -0.00024, -0.00017];
+      c = a[0] * s(Mp) + a[1] * E * s(M) + a[2] * s(2 * Mp) + a[3] * s(2 * F) + a[4] * E * s(Mp - M) + a[5] * E * s(Mp + M) + a[6] * E * E * s(2 * M) +
+        a[7] * s(Mp - 2 * F) + a[8] * s(Mp + 2 * F) + a[9] * E * s(2 * Mp + M) + a[10] * s(3 * Mp) + a[11] * E * s(M + 2 * F) + a[12] * E * s(M - 2 * F) +
+        a[13] * E * s(2 * Mp - M) + a[14] * s(Om);
+    } else {
+      c = -0.62801 * s(Mp) + 0.17172 * E * s(M) - 0.01183 * E * s(Mp + M) + 0.00862 * s(2 * Mp) + 0.00804 * s(2 * F) + 0.00454 * E * s(Mp - M) +
+        0.00204 * E * E * s(2 * M) - 0.0018 * s(Mp - 2 * F) - 0.0007 * s(Mp + 2 * F) - 0.0004 * s(3 * Mp) - 0.00034 * E * s(2 * Mp - M) +
+        0.00032 * E * s(M + 2 * F) + 0.00032 * E * s(M - 2 * F) - 0.00028 * E * E * s(Mp + 2 * M) + 0.00027 * E * s(2 * Mp + M) - 0.00017 * s(Om);
+      var W = 0.00306 - 0.00038 * E * Math.cos(M) + 0.00026 * Math.cos(Mp) - 0.00002 * Math.cos(Mp - M) + 0.00002 * Math.cos(Mp + M) + 0.00002 * Math.cos(2 * F);
+      c += q === 1 ? W : -W;
+    }
+    return (jde + c - 69 / 86400 - 2440587.5) * DAYMS;
+  }
+  // fasi principali tra due momenti (q: 0 nuova, 1 primo quarto, 2 piena, 3 ultimo quarto)
+  function phaseEvents(fromMs, toMs) {
+    var k0 = Math.floor((fromMs / DAYMS / 365.25 + 1970 - 2000) * 12.3685) - 2, out = [], k, q;
+    for (k = k0; k < k0 + 8 + Math.ceil((toMs - fromMs) / DAYMS / 29.5); k++) {
+      for (q = 0; q < 4; q++) { var t = phaseTime(k, q); if (t >= fromMs && t < toMs) out.push({ t: t, q: q }); }
+    }
+    return out.sort(function (a, b) { return a.t - b.t; });
+  }
+  var PHASE_NAMES = ['Luna nuova', 'Primo quarto', 'Luna piena', 'Ultimo quarto'];
+
+  // ---------- giorno locale (ora di Roma) ----------
+  function localParts(ms) {
+    var p = new Intl.DateTimeFormat('en-GB', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(ms)), o = {};
+    p.forEach(function (x) { o[x.type] = x.value; });
+    return { date: o.year + '-' + o.month + '-' + o.day, h: Number(o.hour), mi: Number(o.minute) };
+  }
+  // millisecondi dell'istante "date hh:mm" ora di Roma
+  function localMs(date, hh_, mi) {
+    var p = date.split('-').map(Number), base = Date.UTC(p[0], p[1] - 1, p[2], hh_, mi || 0), off;
+    for (off = 3; off >= 0; off--) {
+      var c = base - off * 3600e3, q = localParts(c);
+      if (q.date === date && q.h === hh_ && q.mi === (mi || 0)) return c;
+    }
+    return base - 2 * 3600e3;
+  }
+  function nextDate(date) {
+    var p = date.split('-').map(Number);
+    return dayFmt.format(new Date(Date.UTC(p[0], p[1] - 1, p[2] + 1, 12)));
+  }
+  function clock(ms) { var q = localParts(ms); return (q.h < 10 ? '0' : '') + q.h + ':' + (q.mi < 10 ? '0' : '') + q.mi; }
+
+  // sorge, culmina e tramonta nell'arco del giorno locale
+  function moonDay(date) {
+    var t0 = localMs(date, 0, 0), t1 = localMs(nextDate(date), 0, 0), hc = 0.133, step = 600e3, t, prev = moonAlt(t0) - hc, rise = null, set = null, best = -90, bt = t0;
+    for (t = t0 + step; t <= t1; t += step) {
+      var a = moonAlt(t), cur = a - hc;
+      if (prev < 0 && cur >= 0 && rise === null) rise = cross(t - step, t, hc);
+      if (prev >= 0 && cur < 0 && set === null) set = cross(t - step, t, hc);
+      if (a > best) { best = a; bt = t; }
+      prev = cur;
+    }
+    return { rise: rise, set: set, max: best, maxT: bt, t0: t0, t1: t1 };
+  }
+  function cross(a, b, hc) {
+    var up = moonAlt(b) - hc >= 0, i;
+    for (i = 0; i < 20; i++) {
+      var m = (a + b) / 2, v = moonAlt(m) - hc >= 0;
+      if (v === up) b = m; else a = m;
+    }
+    return (a + b) / 2;
+  }
+
+  // ---------- marea astronomica, Laguna di Venezia (Punta della Salute) ----------
+  // Costanti armoniche del Centro Previsioni e Segnalazioni Maree di Venezia (ampiezza cm, fase gradi, velocità gradi/ora).
+  var TIDE_C = {
+    M2: [23.6, 310, 28.9841042], S2: [13.7, 319, 30.0], N2: [3.8, 309, 28.4397295], K2: [4.1, 313, 30.0821373],
+    K1: [17.3, 87, 15.0410686], O1: [5.2, 78, 13.9430356], P1: [5.5, 85, 14.9589314]
+  };
+  var TIDE_SHIFT = -0.85;   // ore: allineamento verificato su tabelle di marea pubblicate (errore tipico 5-15 minuti)
+  var TIDE_ZMPS = 31;       // livello medio del mare sopra lo zero di Punta Salute (cm)
+  function tideCm(ms) {
+    var T = (ms / DAYMS + 2440587.5 - 2451545) / 36525;
+    var s = (218.3165 + 481267.8813 * T) % 360, h = (280.4661 + 36000.7698 * T) % 360, p = (83.3535 + 4069.0137 * T) % 360, N = (125.0445 - 1934.1363 * T) % 360;
+    var tu = (ms / 3600e3) % 24, Tm = 15 * (tu - 12), cN = Math.cos(RAD * N), sN = Math.sin(RAD * N);
+    var V = { M2: 2 * Tm - 2 * s + 2 * h, S2: 2 * Tm, N2: 2 * Tm - 3 * s + 2 * h + p, K2: 2 * Tm + 2 * h, K1: Tm + h - 90, O1: Tm - 2 * s + h + 90, P1: Tm - h + 90 };
+    var F = { M2: 1 - 0.037 * cN, N2: 1 - 0.037 * cN, K2: 1.024 + 0.286 * cN, K1: 1.006 + 0.115 * cN, O1: 1.009 + 0.187 * cN, S2: 1, P1: 1 };
+    var U = { M2: -2.14 * sN, N2: -2.14 * sN, K2: -17.74 * sN, K1: -8.86 * sN, O1: 10.80 * sN, S2: 0, P1: 0 };
+    var tot = 0, k;
+    for (k in TIDE_C) tot += F[k] * TIDE_C[k][0] * Math.cos(RAD * (V[k] + U[k] - TIDE_C[k][1] - TIDE_SHIFT * TIDE_C[k][2]));
+    return tot + TIDE_ZMPS;
+  }
+  // alte e basse maree nell'arco del giorno locale
+  function tideDay(date) {
+    var t0 = localMs(date, 0, 0), t1 = localMs(nextDate(date), 0, 0), step = 300e3, ts = [], ys = [], t, i, ex = [];
+    for (t = t0 - step; t <= t1 + step; t += step) { ts.push(t); ys.push(tideCm(t)); }
+    for (i = 1; i < ys.length - 1; i++) {
+      var isH = ys[i] > ys[i - 1] && ys[i] >= ys[i + 1], isL = ys[i] < ys[i - 1] && ys[i] <= ys[i + 1];
+      if (!isH && !isL) continue;
+      var den = ys[i - 1] - 2 * ys[i] + ys[i + 1], dx = den ? 0.5 * (ys[i - 1] - ys[i + 1]) / den : 0;
+      var tt = ts[i] + dx * step, yy = ys[i] - 0.25 * (ys[i - 1] - ys[i + 1]) * dx;
+      if (tt >= t0 && tt < t1) ex.push({ t: tt, y: yy, hi: isH });
+    }
+    var lo = Infinity, hi = -Infinity;
+    for (i = 0; i < ys.length; i++) { if (ts[i] >= t0 && ts[i] <= t1) { if (ys[i] < lo) lo = ys[i]; if (ys[i] > hi) hi = ys[i]; } }
+    var cl = [];
+    ex.forEach(function (e) { var l = cl[cl.length - 1]; if (l && l.hi === e.hi && Math.abs(l.t - e.t) < 3 * 3600e3) { if ((e.hi && e.y > l.y) || (!e.hi && e.y < l.y)) cl[cl.length - 1] = e; } else cl.push(e); });
+    for (i = 0; i < cl.length - 1; i++) {
+      // scarta piccole oscillazioni (alta e bassa quasi uguali, ravvicinate) quando la marea è quasi piatta
+      if (cl[i].hi !== cl[i + 1].hi && Math.abs(cl[i].y - cl[i + 1].y) < 4) { cl.splice(i, 2); i = Math.max(-1, i - 2); }
+    }
+    return { t0: t0, t1: t1, ex: cl, lo: lo, hi: hi };
+  }
+
+  // ---------- luna ----------
+  function moonSvg(p, size) {
+    var pp = p < 0.5 ? p : 1 - p, rx = Math.abs(Math.cos(2 * Math.PI * pp)) * 18;
+    var lit = 'M20 2A18 18 0 0 1 20 38A' + rx.toFixed(2) + ' 18 0 0 ' + (pp < 0.25 ? 0 : 1) + ' 20 2z';
+    return '<svg viewBox="0 0 40 40" width="' + size + '" height="' + size + '" role="img" aria-label="Fase lunare" style="width:' + size + 'px;height:' + size + 'px">' +
+      '<circle cx="20" cy="20" r="18" fill="var(--moon-dark)" stroke="var(--cloud)" stroke-width="1"/>' +
+      '<path d="' + lit + '" fill="var(--moon-lit)"' + (p >= 0.5 ? ' transform="translate(40 0) scale(-1 1)"' : '') + '/></svg>';
+  }
+  function moonOf(date) {
+    var ref = localMs(date, 21, 0), ph = moonPhase(ref), t0 = localMs(date, 0, 0), t1 = localMs(nextDate(date), 0, 0);
+    var evs = phaseEvents(t0, t1), ev = evs.length ? evs[0] : null, p = ph.phase;
+    var name = ev ? PHASE_NAMES[ev.q] : p < 0.25 ? 'Falce crescente' : p < 0.5 ? 'Gibbosa crescente' : p < 0.75 ? 'Gibbosa calante' : 'Falce calante';
+    var news = phaseEvents(ref - 31 * DAYMS, ref).filter(function (e) { return e.q === 0; });
+    return { ref: ref, p: p, frac: ph.frac, dist: ph.dist, ev: ev, name: name, age: news.length ? (ref - news[news.length - 1].t) / DAYMS : p * 29.53 };
+  }
+  function distLabel(km) { return km < 362000 ? 'vicina (perigeo)' : km > 404000 ? 'lontana (apogeo)' : 'media'; }
+  function thousands(n) { return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, '.'); }
+  function moonVisibility(date) {
+    if (!state.sky || !state.sky.length) return null;
+    var tm = sunTimes(date), cs = [], n = 0, hr;
+    for (hr = 0; hr < 24; hr++) {
+      var mid = localMs(date, hr, 30);
+      if (moonAlt(mid) > 5 && sunAlt(mid) < -6) { n++; var e = skyHour(date, hr, tm); if (ok(e.c)) cs.push(e.c); }
+    }
+    return { hrs: n, cloud: cs.length ? MEAN(cs) : NaN };
+  }
+  function renderMoonChart(md, isToday) {
+    var W = 420, H = 210, L = 34, R = 14, T = 22, B = 26, span = md.t1 - md.t0, step = 600e3, t, k, s;
+    var hiA = Math.max(30, Math.ceil((md.max + 5) / 30) * 30), loA = -30;
+    function X(tt) { return L + (W - L - R) * (tt - md.t0) / span; }
+    function Y(a) { return T + (H - T - B) * (1 - (a - loA) / (hiA - loA)); }
+    var pts = [], nights = [], cur = null;
+    for (t = md.t0; t <= md.t1; t += step) {
+      pts.push([X(t), Y(moonAlt(t))]);
+      if (sunAlt(t) < -0.833) { if (!cur) { cur = { a: t, b: t }; nights.push(cur); } cur.b = t; } else cur = null;
+    }
+    s = '<svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="Altezza della Luna sull\'orizzonte">';
+    nights.forEach(function (n) { s += '<rect x="' + X(n.a) + '" y="' + T + '" width="' + Math.max(1, X(n.b) - X(n.a)) + '" height="' + (H - T - B) + '" fill="var(--night)" fill-opacity="0.35"/>'; });
+    for (k = loA; k <= hiA; k += 30) {
+      s += '<line class="gl" x1="' + L + '" x2="' + (W - R) + '" y1="' + Y(k) + '" y2="' + Y(k) + '"' + (k === 0 ? ' style="stroke:var(--muted)"' : '') + '/><text class="ax" x="' + (L - 6) + '" y="' + (Y(k) + 4) + '" text-anchor="end">' + k + '°</text>';
+    }
+    s += '<clipPath id="mclip"><rect x="' + L + '" y="' + T + '" width="' + (W - L - R) + '" height="' + (Y(0) - T) + '"/></clipPath>';
+    s += '<polygon clip-path="url(#mclip)" points="' + pts.map(function (p) { return p[0].toFixed(1) + ',' + p[1].toFixed(1); }).join(' ') + ' ' + X(md.t1) + ',' + Y(loA) + ' ' + X(md.t0) + ',' + Y(loA) + '" fill="var(--moon-lit)" fill-opacity="0.45"/>';
+    s += '<clipPath id="mclip2"><rect x="' + L + '" y="' + T + '" width="' + (W - L - R) + '" height="' + (H - T - B) + '"/></clipPath>';
+    s += '<polyline clip-path="url(#mclip2)" points="' + pts.map(function (p) { return p[0].toFixed(1) + ',' + p[1].toFixed(1); }).join(' ') + '" fill="none" stroke="var(--cloud)" stroke-width="2.2" stroke-linejoin="round"/>';
+    if (isToday) {
+      var nw = Date.now();
+      if (nw >= md.t0 && nw <= md.t1) s += '<line x1="' + X(nw) + '" x2="' + X(nw) + '" y1="' + T + '" y2="' + (H - B) + '" stroke="var(--muted)" stroke-dasharray="3 3"/><text class="ax" x="' + X(nw) + '" y="' + (T - 8) + '" text-anchor="middle">ora</text>' +
+        '<circle cx="' + X(nw) + '" cy="' + Y(moonAlt(nw)) + '" r="4.5" fill="var(--moon-lit)" stroke="var(--cloud)" stroke-width="2"/>';
+    }
+    function tag(tt, txt, up) {
+      var x = X(tt), a = x < 60 ? 'start' : x > W - 60 ? 'end' : 'middle';
+      return '<circle cx="' + x + '" cy="' + Y(moonAlt(tt)) + '" r="3.5" fill="var(--cloud)" stroke="var(--surface)" stroke-width="1.5"/><text x="' + x + '" y="' + (Y(moonAlt(tt)) + (up ? -8 : 15)) + '" text-anchor="' + a + '" font-size="11" font-family="var(--f-mono)" fill="var(--ink)">' + txt + '</text>';
+    }
+    if (md.rise) s += tag(md.rise, 'sorge ' + clock(md.rise), false);
+    if (md.set) s += tag(md.set, 'tramonta ' + clock(md.set), false);
+    if (md.max > 0) s += tag(md.maxT, Math.round(md.max) + '°', true);
+    for (k = 0; k < 24; k += 3) s += '<text class="ax" x="' + X(md.t0 + k * 3600e3) + '" y="' + (H - 8) + '" text-anchor="middle">' + k + '</text>';
+    return s + '</svg>';
+  }
+
+  function renderMoon() {
+    var i, strip = '', mo = [];
+    for (i = 0; i < NDAYS; i++) {
+      var m = moonOf(state.dates[i]), t = toDate(state.dates[i]);
+      mo.push(m);
+      strip += '<button type="button" class="day mday" data-d="' + i + '" aria-pressed="' + (i === state.sel) + '"><span class="dn">' + fmtWd(t) + '</span><span class="dd">' + fmtDm(t) + '</span>' +
+        '<span class="mi">' + moonSvg(m.p, 40) + '</span><span class="rr">' + Math.round(m.frac * 100) + '%</span><span class="mn">' + m.name + '</span></button>';
+    }
+    $('moonstrip').innerHTML = strip;
+    var date = state.dates[state.sel], m2 = mo[state.sel], md = moonDay(date), h = '';
+    var evp = m2.ev ? '<span class="pill ' + (m2.ev.q % 2 ? 'sunp' : 'cloudp') + '">' + PHASE_NAMES[m2.ev.q] + ' alle ' + clock(m2.ev.t) + '</span>' : '';
+    var dl = distLabel(m2.dist);
+    var super_ = (m2.ev && (m2.ev.q === 0 || m2.ev.q === 2) && m2.dist < 362000) ? '<span class="pill warn">' + (m2.ev.q === 2 ? 'Superluna' : 'Luna nuova vicina') + '</span>' : '';
+    h += '<div class="mhero"><div class="mic">' + moonSvg(m2.p, 76) + '</div><div class="mtx"><div class="mname">' + m2.name + '</div>' +
+      '<div class="msub">Illuminata al ' + Math.round(m2.frac * 100) + '% · età ' + f(m2.age, 1) + ' giorni</div><div class="msub">Aspetto alle 21:00</div><div class="rp" style="margin-top:6px">' + evp + super_ + '</div></div></div>';
+    function r(a, b) { return '<div class="pl two"><span>' + a + '</span><span class="vv">' + b + '</span></div>'; }
+    h += r('Sorge', md.rise ? clock(md.rise) : 'non in questo giorno');
+    h += r('Culmina', md.max > 0 ? clock(md.maxT) + ' · ' + Math.round(md.max) + '° di altezza' : 'sempre sotto l\'orizzonte');
+    h += r('Tramonta', md.set ? clock(md.set) : 'non in questo giorno');
+    h += r('Distanza', thousands(m2.dist) + ' km · ' + dl);
+    var vis = moonVisibility(date), vt;
+    if (!vis) vt = 'n/d'; else if (!vis.hrs) vt = 'non visibile di notte'; else vt = vis.hrs + (vis.hrs === 1 ? ' ora' : ' ore') + ' di buio' + (ok(vis.cloud) ? ' · nuvolosità ' + f(vis.cloud, 0) + '%' + (vis.cloud < 30 ? ' (cielo buono)' : vis.cloud < 60 ? ' (parziale)' : ' (poco visibile)') : '');
+    h += r('Visibilità di notte', vt);
+    $('moonnow').innerHTML = h;
+    var ts = toDate(date);
+    $('moonchart').innerHTML = '<p class="sub">Altezza della Luna · ' + fmtWd(ts) + ' ' + fmtDm(ts) + '</p>' + renderMoonChart(md, state.sel === 0);
+    var nx = phaseEvents(Date.now(), Date.now() + 40 * DAYMS).slice(0, 4), ph = '<p class="sub">Prossime fasi</p>';
+    nx.forEach(function (e) {
+      var q = localParts(e.t), td = toDate(q.date);
+      ph += '<div class="pl two"><span class="phn">' + moonSvg(e.q * 0.25, 22) + PHASE_NAMES[e.q] + '</span><span class="vv">' + fmtWd(td) + ' ' + fmtDm(td) + ' · ' + clock(e.t) + '</span></div>';
+    });
+    $('moonnext').innerHTML = ph;
+  }
+
+  // ---------- maree ----------
+  function renderTideChart(td, isToday) {
+    var W = 420, H = 230, L = 40, R = 14, T = 28, B = 26, span = td.t1 - td.t0, step = 600e3, t, k, s;
+    var lo = Math.floor((td.lo - 15) / 20) * 20, hi = Math.ceil((td.hi + 15) / 20) * 20;
+    function X(tt) { return L + (W - L - R) * (tt - td.t0) / span; }
+    function Y(v) { return T + (H - T - B) * (1 - (v - lo) / (hi - lo)); }
+    var pts = [];
+    for (t = td.t0; t <= td.t1; t += step) pts.push(X(t).toFixed(1) + ',' + Y(tideCm(t)).toFixed(1));
+    s = '<svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="Livello di marea durante il giorno">';
+    for (k = lo; k <= hi; k += 20) {
+      s += '<line class="gl" x1="' + L + '" x2="' + (W - R) + '" y1="' + Y(k) + '" y2="' + Y(k) + '"' + (k === 0 ? ' style="stroke:var(--muted)"' : '') + '/><text class="ax" x="' + (L - 6) + '" y="' + (Y(k) + 4) + '" text-anchor="end">' + (k > 0 ? '+' : '') + k + '</text>';
+    }
+    s += '<text class="ax" x="' + L + '" y="' + (T - 16) + '">cm</text>';
+    s += '<polygon points="' + pts.join(' ') + ' ' + X(td.t1) + ',' + Y(lo) + ' ' + X(td.t0) + ',' + Y(lo) + '" fill="var(--rain)" fill-opacity="0.2"/>';
+    s += '<polyline points="' + pts.join(' ') + '" fill="none" stroke="var(--rain)" stroke-width="2.4" stroke-linejoin="round"/>';
+    if (isToday) {
+      var nw = Date.now();
+      if (nw >= td.t0 && nw <= td.t1) s += '<line x1="' + X(nw) + '" x2="' + X(nw) + '" y1="' + T + '" y2="' + (H - B) + '" stroke="var(--muted)" stroke-dasharray="3 3"/><text class="ax" x="' + X(nw) + '" y="' + (T - 16) + '" text-anchor="middle">ora</text>' +
+        '<circle cx="' + X(nw) + '" cy="' + Y(tideCm(nw)) + '" r="4.5" fill="var(--rain)" stroke="var(--surface)" stroke-width="2"/>';
+    }
+    td.ex.forEach(function (e) {
+      var x = X(e.t), a = x < 70 ? 'start' : x > W - 70 ? 'end' : 'middle', y = Y(e.y);
+      s += '<circle cx="' + x + '" cy="' + y + '" r="4" fill="' + (e.hi ? 'var(--tmax)' : 'var(--tmin)') + '" stroke="var(--surface)" stroke-width="2"/>' +
+        '<text x="' + x + '" y="' + (e.hi ? y - 9 : y + 17) + '" text-anchor="' + a + '" font-size="11" font-weight="600" font-family="var(--f-mono)" fill="var(--ink)">' + clock(e.t) + ' ' + (e.y > 0 ? '+' : '') + Math.round(e.y) + '</text>';
+    });
+    for (k = 0; k < 24; k += 3) s += '<text class="ax" x="' + X(td.t0 + k * 3600e3) + '" y="' + (H - 8) + '" text-anchor="middle">' + k + '</text>';
+    return s + '</svg>';
+  }
+
+  function renderTide() {
+    var i, html = '', tds = [];
+    for (i = 0; i < NDAYS; i++) {
+      var td = tideDay(state.dates[i]), t = toDate(state.dates[i]), parts = '', range = td.hi - td.lo;
+      tds.push(td);
+      td.ex.forEach(function (e) {
+        parts += '<span class="pill ' + (e.hi ? 'tmaxp' : 'tminp') + '">' + (e.hi ? '▲ ' : '▼ ') + clock(e.t) + ' ' + (e.y > 0 ? '+' : '') + Math.round(e.y) + '</span>';
+      });
+      if (range >= 85) parts += '<span class="pill warn">Maree vive</span>';
+      else if (range <= 60) parts += '<span class="pill off">Maree morte</span>';
+      html += '<div class="rl' + (i === state.sel ? ' sel' : '') + '" data-d="' + i + '"><div class="rd"><b>' + fmtWd(t) + '</b> ' + fmtDm(t) + '</div><div class="rp">' + parts + '</div></div>';
+    }
+    $('tidelist').innerHTML = html;
+    var now = Date.now(), sum = '';
+    if (state.sel === 0) {
+      var cur = tideCm(now), up = tideCm(now + 600e3) > cur;
+      var nxt = tds[0].ex.concat(tideDay(nextDate(state.dates[0])).ex).filter(function (e) { return e.t > now; })[0];
+      sum = '<p class="adv"><b>Adesso ' + (cur > 0 ? '+' : '') + Math.round(cur) + ' cm</b>, marea in ' + (up ? 'salita' : 'discesa') +
+        (nxt ? ' · prossima ' + (nxt.hi ? 'alta' : 'bassa') + ' alle ' + clock(nxt.t) + ' (' + (nxt.y > 0 ? '+' : '') + Math.round(nxt.y) + ' cm)' : '') + '</p>';
+    }
+    var ts = toDate(state.dates[state.sel]);
+    $('tidechart').innerHTML = sum + '<p class="sub">Livello ora per ora · ' + fmtWd(ts) + ' ' + fmtDm(ts) + '</p>' + renderTideChart(tds[state.sel], state.sel === 0);
+  }
 
   // ---------- temperature ora per ora ----------
   function tempDay(i) {
@@ -584,7 +894,7 @@
   }
 
   function loadHourly(m, force) {
-    var key = 'meteo.h3.' + m.id, c = null, now = Date.now();
+    var key = 'meteo.h4.' + m.id, c = null, now = Date.now();
     try { c = JSON.parse(lsGet(key) || 'null'); } catch (e) { c = null; }
     if (c && !force && now - c.t < TTL) return Promise.resolve({ id: m.id, data: c.data });
     return openMeteoHourly(m.model).then(function (data) {
@@ -1067,7 +1377,7 @@
 
   function renderExtras() {
     var errs = [];
-    [['temperature', renderTemp], ['pioggia', renderRain], ['sole', renderSky], ['aria', renderAir]].forEach(function (p) {
+    [['luna', renderMoon], ['maree', renderTide], ['temperature', renderTemp], ['pioggia', renderRain], ['sole', renderSky], ['aria', renderAir]].forEach(function (p) {
       try { p[1](); } catch (e) { errs.push(p[0] + ': ' + e.message); }
     });
     $('diag').textContent = errs.length ? 'Avviso: sezione non mostrata (' + errs.join('; ') + ').' : '';
@@ -1101,9 +1411,9 @@
       state.hourly = h; state.hourlyDone = true; safeRender();
     });
     Promise.all(HMODELS.map(function (m) {
-      return loadCached('meteo.s.' + m.id, function () { return openMeteoSky(m.model); }, force).then(function (d) { return d ? { id: m.id, data: d } : null; });
+      return loadCached('meteo.s9.' + m.id, function () { return openMeteoSky(m.model); }, force).then(function (d) { return d ? { id: m.id, data: d } : null; });
     })).then(function (r) { state.sky = r.filter(Boolean); state.skyDone = true; safeRender(); });
-    loadCached('meteo.sun', openMeteoSun, force).then(function (d) { state.sun = d; safeRender(); });
+    loadCached('meteo.sun9', openMeteoSun, force).then(function (d) { state.sun = d; safeRender(); });
     loadCached('meteo.a', openMeteoAir, force).then(function (d) { state.air = d; state.airDone = true; safeRender(); });
   }
 
@@ -1124,6 +1434,8 @@
   $('chart').addEventListener('click', setSel);
   $('tbl').addEventListener('click', setSel);
   $('templist').addEventListener('click', setSel);
+  $('moonstrip').addEventListener('click', setSel);
+  $('tidelist').addEventListener('click', setSel);
   $('rainlist').addEventListener('click', setSel);
   $('skylist').addEventListener('click', setSel);
   $('airlist').addEventListener('click', setSel);
