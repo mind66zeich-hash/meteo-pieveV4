@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '4';
+  var VERSION = '5';
   window.addEventListener('error', function (e) {
     var l = document.getElementById('lead');
     if (l) l.textContent = 'Errore: ' + (e.message || 'sconosciuto') + ' (versione ' + VERSION + ')';
@@ -276,12 +276,104 @@
   var SINK = document.createElement('div');
   function $(id) { return document.getElementById(id) || SINK; }
 
+
+  // ---------- icone meteo ----------
+  var CL = 'M11 25h17.5a5.5 5.5 0 0 0 .9-10.9A8 8 0 0 0 14 12.8 6.3 6.3 0 0 0 11 25z';
+  function cloudP(tr, strong) {
+    return '<path d="' + CL + '"' + (tr ? ' transform="' + tr + '"' : '') + ' fill="' + (strong ? 'var(--cloud)' : 'var(--cloud-bg)') +
+      '" stroke="var(--cloud)" stroke-width="1.6" stroke-linejoin="round"/>';
+  }
+  function sunP(cx, cy, r, rays) {
+    var s = '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="var(--sunfill)"/>', a;
+    for (a = 0; a < 8; a++) {
+      var an = a * Math.PI / 4, c = Math.cos(an), n = Math.sin(an);
+      s += '<line x1="' + (cx + c * (r + 2.5)).toFixed(1) + '" y1="' + (cy + n * (r + 2.5)).toFixed(1) + '" x2="' + (cx + c * (r + rays)).toFixed(1) + '" y2="' + (cy + n * (r + rays)).toFixed(1) + '" stroke="var(--sunfill)" stroke-width="2.2" stroke-linecap="round"/>';
+    }
+    return s;
+  }
+  function drops(xs, y0, len, w) {
+    return xs.map(function (x) {
+      return '<line x1="' + x + '" y1="' + y0 + '" x2="' + (x - 2.2) + '" y2="' + (y0 + len) + '" stroke="var(--rain)" stroke-width="' + w + '" stroke-linecap="round"/>';
+    }).join('');
+  }
+  function flake(x, y) {
+    return '<path d="M' + (x - 3) + ' ' + y + 'h6M' + x + ' ' + (y - 3) + 'v6M' + (x - 2.2) + ' ' + (y - 2.2) + 'l4.4 4.4M' + (x - 2.2) + ' ' + (y + 2.2) + 'l4.4 -4.4" stroke="var(--rain)" stroke-width="1.5" stroke-linecap="round" fill="none"/>';
+  }
+  var ICONS = {
+    sun: { l: 'Sereno', g: function () { return sunP(20, 20, 7, 6); } },
+    moon: { l: 'Sereno', g: function () { return '<path d="M25 7a13 13 0 1 0 9 22A11 11 0 0 1 25 7z" fill="var(--cloud)"/>'; } },
+    few: { l: 'Poco nuvoloso', g: function () { return sunP(15, 15, 6, 5) + cloudP('translate(7 8) scale(.85)'); } },
+    moonc: { l: 'Poco nuvoloso', g: function () { return '<path d="M19 5a10 10 0 1 0 7 17A8.5 8.5 0 0 1 19 5z" fill="var(--cloud)"/>' + cloudP('translate(7 8) scale(.85)'); } },
+    part: { l: 'Variabile', g: function () { return sunP(26, 13, 5.5, 4.5) + cloudP('translate(-1 6)'); } },
+    cloud: { l: 'Nuvoloso', g: function () { return cloudP('translate(0 5)'); } },
+    over: { l: 'Coperto', g: function () { return cloudP('translate(-4 -1) scale(.85)', true) + cloudP('translate(3 7)'); } },
+    rain1: { l: 'Pioggia debole', g: function () { return cloudP('translate(0 -1)') + drops([17, 25], 28, 5, 2.2); } },
+    rain2: { l: 'Pioggia moderata', g: function () { return cloudP('translate(0 -1)') + drops([14, 21, 28], 28, 7, 2.4); } },
+    rain3: { l: 'Pioggia forte', g: function () { return cloudP('translate(0 -2)', true) + drops([13, 19.5, 26, 32], 26, 10, 2.8); } },
+    storm: { l: 'Temporale', g: function () { return cloudP('translate(0 -2)', true) + '<polygon points="22,22 16,31 20.5,31 18,38 27,27 22,27 25,22" fill="var(--sunfill)" stroke="var(--warn)" stroke-width="1" stroke-linejoin="round"/>' + drops([12, 30], 27, 6, 2.2); } },
+    hail: { l: 'Grandine possibile', g: function () {
+      return cloudP('translate(0 -2)', true) + [[14, 28], [22, 31], [30, 28], [18, 36], [27, 36]].map(function (p) {
+        return '<circle cx="' + p[0] + '" cy="' + p[1] + '" r="2.6" fill="var(--bad)" stroke="var(--surface)" stroke-width="1"/>';
+      }).join(''); } },
+    snow: { l: 'Neve', g: function () { return cloudP('translate(0 -2)') + flake(15, 31) + flake(23, 35) + flake(30, 30); } }
+  };
+  function icon(kind, size) {
+    var d = ICONS[kind];
+    if (!d) return '';
+    return '<svg viewBox="0 0 40 40" width="' + size + '" height="' + size + '" role="img" aria-label="' + d.l + '" style="width:' + size + 'px;height:' + size + 'px">' + d.g() + '</svg>';
+  }
+  function cloudKind(c, night) {
+    if (!ok(c)) return '';
+    if (c < 20) return night ? 'moon' : 'sun';
+    if (c < 45) return night ? 'moonc' : 'few';
+    if (c < 70) return night ? 'moonc' : 'part';
+    return c < 85 ? 'cloud' : 'over';
+  }
+  function rainLevel(mm, perHour) {
+    var a = perHour ? 1 : 2, b = perHour ? 4 : 10;
+    return mm < a ? 'rain1' : mm < b ? 'rain2' : 'rain3';
+  }
+  // tipo di giornata: grandine > temporale > neve > pioggia > nuvolosità
+  function dayKind(i, o) {
+    var date = state.dates[i], N = state.hourly.length, hail = 0, storm = 0, snow = 0, hr, ccs = [];
+    for (hr = 0; hr < 24; hr++) {
+      var c = hourCons(date, hr);
+      if (c.hail > 0) hail++;
+      if (c.storm > 0 && c.storm >= Math.min(2, N)) storm++;
+      if (c.nm > 0 && c.snow * 2 >= c.nm) snow++;
+      if (hr >= 7 && hr <= 19 && ok(c.cc)) ccs.push(c.cc);
+    }
+    if (hail > 0) return 'hail';
+    if (storm > 0) return 'storm';
+    if (snow >= 2) return 'snow';
+    var mm = pick(o.prec), pr = pick(o.prob);
+    if (ok(mm) && mm >= 0.5 && (!ok(pr) || pr >= 30)) return rainLevel(mm, false);
+    var cloud = NaN;
+    try { var sd = skyDay(i); if (sd.has) cloud = sd.cloud; } catch (e) { cloud = NaN; }
+    if (!ok(cloud) && ccs.length) cloud = MEAN(ccs);
+    return cloudKind(cloud, false);
+  }
+  function hourKind(date, hr, c, tm) {
+    if (c.hail > 0) return 'hail';
+    if (c.storm >= Math.min(2, state.hourly.length) && c.storm > 0) return 'storm';
+    if (c.nm > 0 && c.snow * 2 >= c.nm && c.wet) return 'snow';
+    if (c.wet && ok(c.mm)) return rainLevel(c.mm, true);
+    var night = false, cloud = NaN;
+    if (tm) night = Math.max(0, Math.min(hr * 60 + 60, tm.set) - Math.max(hr * 60, tm.rise)) === 0;
+    try { var e = skyHour(date, hr, tm); if (ok(e.c)) cloud = e.c; } catch (x) { cloud = NaN; }
+    if (!ok(cloud)) cloud = c.cc;
+    return cloudKind(cloud, night);
+  }
+
   function renderDays(A) {
     var h = '';
     A.days.forEach(function (o, i) {
-      var t = toDate(state.dates[i]);
+      var t = toDate(state.dates[i]), k = '';
+      try { k = dayKind(i, o); } catch (e) { k = ''; }
+      if (!k) { try { var sd = skyDay(i); k = sd.has ? cloudKind(sd.cloud, false) : ''; } catch (e2) { k = ''; } }
       h += '<button type="button" class="day" data-d="' + i + '" aria-pressed="' + (i === state.sel) + '">' +
         '<span class="dn">' + fmtWd(t) + '</span><span class="dd">' + fmtDm(t) + '</span>' +
+        (k ? '<span class="ic">' + icon(k, 36) + '<span>' + ICONS[k].l + '</span></span>' : '') +
         '<span class="tt"><span class="tmax">' + f(pick(o.tmax), 0) + '°</span><span class="tmin">' + f(pick(o.tmin), 0) + '°</span></span>' +
         '<span class="rr">' + f(pick(o.prec)) + ' mm · ' + f(pick(o.prob), 0) + '%</span>' +
         '<span class="pill ' + cls(o.agreement) + '">Accordo ' + lab(o.agreement) + '</span></button>';
@@ -373,6 +465,94 @@
     void okc;
   }
 
+
+  // ---------- temperature ora per ora ----------
+  function tempDay(i) {
+    var out = [], hr, nh = i === 0 ? nowHour() : 0;
+    for (hr = 0; hr < 24; hr++) { var c = hourCons(state.dates[i], hr); c.hr = hr; c.past = hr < nh; out.push(c); }
+    return out;
+  }
+
+  function renderTempChart(hs, i) {
+    var W = 420, H = 230, L = 34, R = 14, T = 24, B = 26, bw = (W - L - R) / 24, k, s, mn = Infinity, mx = -Infinity;
+    hs.forEach(function (h) {
+      if (ok(h.tlo)) mn = Math.min(mn, h.tlo);
+      if (ok(h.thi)) mx = Math.max(mx, h.thi);
+    });
+    if (!isFinite(mn)) return '';
+    var step = (mx - mn) <= 10 ? 2 : (mx - mn) <= 20 ? 5 : 10;
+    var lo = Math.floor(mn / step) * step, hi = Math.ceil(mx / step) * step;
+    if (hi === lo) hi += step;
+    function Y(v) { return T + (H - T - B) * (1 - (v - lo) / (hi - lo)); }
+    function X(h) { return L + (h + 0.5) * bw; }
+    s = '<svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="Temperatura ora per ora">';
+    for (k = lo; k <= hi + 1e-9; k += step) {
+      s += '<line class="gl" x1="' + L + '" x2="' + (W - R) + '" y1="' + Y(k) + '" y2="' + Y(k) + '"/>' +
+        '<text class="ax" x="' + (L - 6) + '" y="' + (Y(k) + 4) + '" text-anchor="end">' + k + '°</text>';
+    }
+    // fascia tra il valore minimo e massimo dei modelli
+    var up = [], dn = [], line = [], pts = [];
+    hs.forEach(function (h) {
+      if (!ok(h.t)) return;
+      up.push(X(h.hr) + ',' + Y(h.thi)); dn.unshift(X(h.hr) + ',' + Y(h.tlo)); line.push(X(h.hr) + ',' + Y(h.t)); pts.push(h);
+    });
+    if (line.length < 2) return '';
+    s += '<polygon points="' + up.join(' ') + ' ' + dn.join(' ') + '" fill="var(--tmax)" fill-opacity="0.16"/>';
+    s += '<polyline points="' + line.join(' ') + '" fill="none" stroke="var(--tmax)" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>';
+    // ora attuale
+    if (i === 0) {
+      var nh = nowHour();
+      s += '<line x1="' + X(nh) + '" x2="' + X(nh) + '" y1="' + T + '" y2="' + (H - B) + '" stroke="var(--muted)" stroke-width="1" stroke-dasharray="3 3"/>' +
+        '<text class="ax" x="' + X(nh) + '" y="' + (T - 8) + '" text-anchor="middle">ora</text>';
+    }
+    // massimo e minimo del giorno
+    var pmax = pts[0], pmin = pts[0];
+    pts.forEach(function (h) { if (h.t > pmax.t) pmax = h; if (h.t < pmin.t) pmin = h; });
+    function mark(h, col, above) {
+      var x = Math.max(L + 12, Math.min(W - R - 12, X(h.hr)));
+      return '<circle cx="' + X(h.hr) + '" cy="' + Y(h.t) + '" r="4" fill="' + col + '" stroke="var(--surface)" stroke-width="2"/>' +
+        '<text x="' + x + '" y="' + (Y(h.t) + (above ? -9 : 17)) + '" text-anchor="middle" font-size="12" font-weight="600" font-family="var(--f-mono)" fill="' + col + '">' + Math.round(h.t) + '°</text>';
+    }
+    s += mark(pmax, 'var(--tmax)', true);
+    if (pmin.hr !== pmax.hr) s += mark(pmin, 'var(--tmin)', false);
+    for (k = 0; k < 24; k += 3) s += '<text class="ax" x="' + X(k) + '" y="' + (H - 8) + '" text-anchor="middle">' + k + '</text>';
+    return s + '</svg>';
+  }
+
+  function renderTemp() {
+    var list = $('templist'), strip = $('tempstrip'), chart = $('tempchart');
+    if (!state.hourly || !state.hourly.length) {
+      list.innerHTML = '<div class="empty">' + (!state.hourlyDone ? 'Carico le temperature...' : 'Temperature orarie non disponibili. Premi Aggiorna per riprovare.') + '</div>';
+      strip.innerHTML = ''; chart.innerHTML = '';
+      return;
+    }
+    var html = '', i, selHours = null;
+    for (i = 0; i < NDAYS; i++) {
+      var hs = tempDay(i), t = toDate(state.dates[i]), parts = '';
+      if (i === state.sel) selHours = hs;
+      var vs = hs.filter(function (h) { return ok(h.t); });
+      if (vs.length) {
+        var a = vs[0], b = vs[0];
+        vs.forEach(function (h) { if (h.t > b.t) b = h; if (h.t < a.t) a = h; });
+        parts = '<span class="pill tminp">Min ' + Math.round(a.t) + '° alle ' + hh(a.hr) + '</span>' +
+          '<span class="pill tmaxp">Max ' + Math.round(b.t) + '° alle ' + hh(b.hr) + '</span>';
+      } else parts = '<span class="pill off">n/d</span>';
+      html += '<div class="rl' + (i === state.sel ? ' sel' : '') + '" data-d="' + i + '"><div class="rd"><b>' + fmtWd(t) + '</b> ' + fmtDm(t) + '</div><div class="rp">' + parts + '</div></div>';
+    }
+    list.innerHTML = html;
+    var date = state.dates[state.sel], tm = sunTimes(date), cells = '', nh = state.sel === 0 ? nowHour() : -1;
+    selHours.forEach(function (h) {
+      var k = '';
+      try { k = hourKind(date, h.hr, h, tm); } catch (e) { k = ''; }
+      cells += '<div class="hc' + (h.past ? ' past' : '') + (h.hr === nh ? ' now' : '') + '"><span class="hr">' + (h.hr < 10 ? '0' : '') + h.hr + '</span>' +
+        '<span class="hi">' + (k ? icon(k, 26) : '') + '</span><span class="ht">' + (ok(h.t) ? Math.round(h.t) + '°' : 'n/d') + '</span></div>';
+    });
+    strip.innerHTML = cells;
+    var ts = toDate(date);
+    chart.innerHTML = '<p class="sub">Ora per ora · ' + fmtWd(ts) + ' ' + fmtDm(ts) + '</p>' + renderTempChart(selHours, state.sel);
+    if (nh >= 0) { var el = strip.children[Math.max(0, nh - 1)]; if (el) strip.scrollLeft = el.offsetLeft - strip.offsetLeft; }
+  }
+
   // ---------- orari di pioggia, temporale e grandine ----------
   var HMODELS = [
     { id: 'ecmwf', model: 'ecmwf_ifs025' },
@@ -382,7 +562,7 @@
   ];
 
   function openMeteoHourly(model) {
-    var q = 'latitude=' + LAT + '&longitude=' + LON + '&hourly=precipitation,precipitation_probability,weather_code,cape' +
+    var q = 'latitude=' + LAT + '&longitude=' + LON + '&hourly=precipitation,precipitation_probability,weather_code,cape,temperature_2m' +
       '&models=' + model + '&timezone=Europe%2FRome&forecast_days=' + NDAYS;
     return getJson('https://api.open-meteo.com/v1/forecast?' + q).then(function (j) {
       var h = j.hourly, out = {}, i, n = h.time.length;
@@ -395,7 +575,8 @@
           mm: k < n ? num(h.precipitation && h.precipitation[k]) : NaN,
           pr: k < n ? num(h.precipitation_probability && h.precipitation_probability[k]) : NaN,
           code: num(h.weather_code && h.weather_code[i]),
-          cape: num(h.cape && h.cape[i])
+          cape: num(h.cape && h.cape[i]),
+          t: num(h.temperature_2m && h.temperature_2m[i])
         };
       }
       return out;
@@ -403,7 +584,7 @@
   }
 
   function loadHourly(m, force) {
-    var key = 'meteo.h2.' + m.id, c = null, now = Date.now();
+    var key = 'meteo.h3.' + m.id, c = null, now = Date.now();
     try { c = JSON.parse(lsGet(key) || 'null'); } catch (e) { c = null; }
     if (c && !force && now - c.t < TTL) return Promise.resolve({ id: m.id, data: c.data });
     return openMeteoHourly(m.model).then(function (data) {
@@ -424,8 +605,10 @@
     return Number(new Intl.DateTimeFormat('en-GB', { hour: '2-digit', hourCycle: 'h23', timeZone: TZ }).format(new Date()));
   }
 
+  var SNOWC = [71, 73, 75, 77, 85, 86];
+
   function hourCons(date, hr) {
-    var mms = [], prs = [], wetN = 0, n = 0, storm = 0, hail = 0, cape = NaN;
+    var mms = [], prs = [], wetN = 0, n = 0, storm = 0, hail = 0, cape = NaN, ts = [], snow = 0, nm = 0, ccs = [];
     state.hourly.forEach(function (m) {
       var day = m.data && m.data[date], e = day && day[hr];
       if (!e) return;
@@ -434,11 +617,21 @@
       if (ok(pr)) prs.push(pr);
       if (code === 95 || code === 96 || code === 99) storm++;
       if (code === 96 || code === 99) hail++;
+      if (ok(code)) {
+        nm++;
+        if (SNOWC.indexOf(code) >= 0) snow++;
+        ccs.push(code === 0 ? 5 : code === 1 ? 20 : code === 2 ? 50 : 90);
+      }
+      if (ok(num(e.t))) ts.push(num(e.t));
       if (ok(cp) && (!ok(cape) || cp > cape)) cape = cp;
     });
     var mm2 = mms.length ? MEAN(mms) : NaN;
     var pr2 = prs.length ? MEAN(prs) : (n ? 100 * wetN / n : NaN);
-    return { mm: mm2, pr: pr2, wet: n > 0 && (mm2 >= 0.2 || wetN / n >= 0.5), storm: storm, hail: hail, cape: cape, n: n };
+    return {
+      mm: mm2, pr: pr2, wet: n > 0 && (mm2 >= 0.2 || wetN / n >= 0.5), storm: storm, hail: hail, cape: cape, n: n,
+      snow: snow, nm: nm, cc: ccs.length ? MEAN(ccs) : NaN,
+      t: ts.length ? MEAN(ts) : NaN, tlo: ts.length ? MIN(ts) : NaN, thi: ts.length ? MAX(ts) : NaN
+    };
   }
 
   function dayHours(i) {
@@ -874,7 +1067,7 @@
 
   function renderExtras() {
     var errs = [];
-    [['pioggia', renderRain], ['sole', renderSky], ['aria', renderAir]].forEach(function (p) {
+    [['temperature', renderTemp], ['pioggia', renderRain], ['sole', renderSky], ['aria', renderAir]].forEach(function (p) {
       try { p[1](); } catch (e) { errs.push(p[0] + ': ' + e.message); }
     });
     $('diag').textContent = errs.length ? 'Avviso: sezione non mostrata (' + errs.join('; ') + ').' : '';
@@ -930,6 +1123,7 @@
   $('days').addEventListener('click', setSel);
   $('chart').addEventListener('click', setSel);
   $('tbl').addEventListener('click', setSel);
+  $('templist').addEventListener('click', setSel);
   $('rainlist').addEventListener('click', setSel);
   $('skylist').addEventListener('click', setSel);
   $('airlist').addEventListener('click', setSel);
