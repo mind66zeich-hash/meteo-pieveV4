@@ -1,0 +1,7 @@
+{
+  "appId": "it.meteo.pievedisoligo",
+  "appName": "Meteo Pieve",
+  "webDir": "docs",
+  "server": { "androidScheme": "https" },
+  "plugins": { "CapacitorHttp": { "enabled": true } }
+}
